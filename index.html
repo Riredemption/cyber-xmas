@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#050103">
-  <title>CyberPink Christmas Smart</title>
+  <title>GreenGold Christmas</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
@@ -32,7 +32,7 @@
       width: 48px;
       height: 48px;
       border: 5px solid #FFF;
-      border-bottom-color: #FF69B4;
+      border-bottom-color: #FFC94A;
       border-radius: 50%;
       display: inline-block;
       animation: rotation 1s linear infinite;
@@ -114,7 +114,7 @@
 
     const COUNTS = isMobile ? { leaves: 800, deco: 100, ribbon: 200, snow: 100 } : { leaves: 2200, deco: 350, ribbon: 800, snow: 600 };
     const TREE_CONFIG = { height: 18, baseRadius: 7, spiralLoops: 4 };
-    const COLORS = { bg: '#050103', leafPink1: '#FFB7C5', leafPink2: '#FF69B4', decoWhite: '#FFFFFF', decoPurple: '#E0B0FF', ribbon: '#FFFFFF' };
+    const COLORS = { bg: '#040806', leafPink1: '#B9FFCB', leafPink2: '#2FD469', decoWhite: '#FFF6DC', decoPurple: '#FFC94A', ribbon: '#FFD76A' };
     const AppState = { TREE: 'TREE', EXPLODE: 'EXPLODE' };
 
     // --- MATH HELPERS ---
@@ -145,7 +145,7 @@
       static getDerivedStateFromError(error) { return { hasError: true, error }; }
       render() {
         if (this.state.hasError) return (
-          <div className="flex flex-col items-center justify-center h-screen bg-black text-pink-500 p-8 text-center">
+          <div className="flex flex-col items-center justify-center h-screen bg-black text-amber-400 p-8 text-center">
             <h2 className="text-xl font-bold mb-4">CRASHED</h2><p className="text-white text-xs opacity-70 mb-4">{this.state.error?.message}</p><button onClick={() => window.location.reload()} className="mt-6 px-6 py-2 border border-pink-500 rounded-full text-white">RELOAD</button>
           </div>
         );
@@ -160,9 +160,9 @@
       if (!show && progress === 0) return null;
       return (
         <Html center>
-          <div className="flex flex-col items-center justify-center p-6 bg-black/90 rounded-2xl backdrop-blur-xl border border-pink-500/30">
+          <div className="flex flex-col items-center justify-center p-6 bg-black/90 rounded-2xl backdrop-blur-xl border border-amber-400/30">
             <span className="loader mb-4"></span>
-            <div className="text-pink-400 font-bold tracking-widest text-sm text-center">LOADING ASSETS... {Math.round(progress)}%</div>
+            <div className="text-amber-300 font-bold tracking-widest text-sm text-center">LOADING ASSETS... {Math.round(progress)}%</div>
           </div>
         </Html>
       );
@@ -199,9 +199,9 @@
       return (
         <>
           {/* Soft Ambient to complement HDR */}
-          <ambientLight intensity={0.2} color="#442233" />
-          <spotLight ref={spot} position={[0, 15, -10]} angle={0.6} penumbra={1} intensity={5} color="#FF69B4" distance={60} decay={1} />
-          <pointLight ref={point} position={[5, 2, 5]} intensity={3} color="#00FFFF" distance={40} decay={1} />
+          <ambientLight intensity={0.2} color="#16301F" />
+          <spotLight ref={spot} position={[0, 15, -10]} angle={0.6} penumbra={1} intensity={5} color="#37E07A" distance={60} decay={1} />
+          <pointLight ref={point} position={[5, 2, 5]} intensity={3} color="#FFD24A" distance={40} decay={1} />
         </>
       );
     };
@@ -301,7 +301,7 @@
         <BreathingLights />
 
         <Snow />
-        <Sparkles count={isMobile ? 30 : 80} scale={[25, 25, 25]} size={4} speed={0.3} opacity={0.5} color="#FFB7C5" />
+        <Sparkles count={isMobile ? 30 : 80} scale={[25, 25, 25]} size={4} speed={0.3} opacity={0.5} color="#FFD24A" />
 
         <group position={[0, -7, 0]}>
           <ChristmasTree appState={appState} rotationSpeed={gestureRotation} />
@@ -309,8 +309,8 @@
         </group>
 
         <EffectComposer disableNormalPass multisampling={0}>
-          <Bloom intensity={1.5} luminanceThreshold={0.2} luminanceSmoothing={0.9} mipmapBlur={!isMobile} />
-          <Vignette offset={0.5} darkness={0.6} />
+          <Bloom intensity={0.55} luminanceThreshold={0.7} luminanceSmoothing={0.05} mipmapBlur={false} />
+          <Vignette offset={0.5} darkness={0.45} />
         </EffectComposer>
 
         {/* [FIX] Only render Environment if path is valid to prevent crashes */}
@@ -320,7 +320,7 @@
           </Suspense>
         )}
 
-        <fog attach="fog" args={['#050103', 15, 60]} />
+        <fog attach="fog" args={['#040806', 30, 80]} />
       </>
     );
 
@@ -397,11 +397,11 @@
       };
 
       if (!active) return (
-        <button onClick={startAI} disabled={loading} className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-pink-600/80 text-white px-6 py-2 rounded-full backdrop-blur font-bold border border-pink-400 shadow-lg active:scale-95 transition-transform">
+        <button onClick={startAI} disabled={loading} className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-emerald-600/80 text-white px-6 py-2 rounded-full backdrop-blur font-bold border border-pink-400 shadow-lg active:scale-95 transition-transform">
           {loading ? "INITIALIZING..." : "✋ ENABLE HAND CONTROL"}
         </button>
       );
-      return <video ref={videoRef} autoPlay playsInline muted className="fixed bottom-4 right-4 w-24 h-18 opacity-50 rounded border border-pink-500 z-40" />;
+      return <video ref={videoRef} autoPlay playsInline muted className="fixed bottom-4 right-4 w-24 h-18 opacity-50 rounded border border-amber-400 z-40" />;
     };
 
     const AudioController = () => {
@@ -447,7 +447,7 @@
           <div className="w-full h-screen bg-[#050103] text-white relative overflow-hidden">
             <AudioController />
             <div className="absolute inset-0 z-0" onClick={() => setAppState(s => s === AppState.TREE ? AppState.EXPLODE : AppState.TREE)}>
-              <Canvas dpr={[1, isMobile ? 1.5 : 2]} gl={{ antialias: false }}>
+              <Canvas dpr={[1, 2]} gl={{ antialias: true }}>
                 <Suspense fallback={<SafeLoader />}>
                   <Scene appState={appState} gestureRotation={gestureRotation} />
                 </Suspense>
@@ -464,15 +464,15 @@
             )}
 
             <div className="absolute top-0 left-0 p-6 z-10 pointer-events-none">
-              <h1 className="text-4xl font-bold tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-pink-400 to-purple-500 drop-shadow-[0_0_10px_rgba(255,105,180,0.5)]">CYBER<span className="text-white font-light">XMAS</span></h1>
-              <p className="mt-1 text-pink-200/50 text-xs tracking-widest">Local HDR Edition</p>
+              <h1 className="text-4xl font-bold tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 to-amber-400 drop-shadow-[0_0_10px_rgba(255,201,74,0.45)]">CYBER<span className="text-white font-light">XMAS</span></h1>
+              <p className="mt-1 text-amber-200/50 text-xs tracking-widest">Local HDR Edition</p>
             </div>
             <div className="absolute bottom-6 left-6 z-10 pointer-events-none text-xs text-gray-400">
-              <p className={`font-bold mb-1 ${aiStatus.startsWith("ERROR") ? "text-red-500" : "text-pink-500"}`}>{aiStatus}</p>
+              <p className={`font-bold mb-1 ${aiStatus.startsWith("ERROR") ? "text-red-500" : "text-amber-400"}`}>{aiStatus}</p>
               <p>TAP SCREEN • PINCH TO ASSEMBLE</p>
             </div>
             <AIController onGestureUpdate={handleGesture} onStatusChange={setAiStatus} />
-            {isGestureActive && <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center"><div className="text-pink-500/10 text-[80px] font-bold tracking-widest animate-pulse">AI ACTIVE</div></div>}
+            {isGestureActive && <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center"><div className="text-amber-400/10 text-[80px] font-bold tracking-widest animate-pulse">AI ACTIVE</div></div>}
           </div>
         </ErrorBoundary>
       );
