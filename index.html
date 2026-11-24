@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#050103">
+  <title>CyberPink Christmas Smart</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;500;700&display=swap');
+
+    body {
+      margin: 0;
+      background-color: #050103;
+      font-family: 'Rajdhani', sans-serif;
+      overflow: hidden;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    canvas {
+      touch-action: none;
+    }
+
+    .loader {
+      width: 48px;
+      height: 48px;
+      border: 5px solid #FFF;
+      border-bottom-color: #FF69B4;
+      border-radius: 50%;
+      display: inline-block;
+      animation: rotation 1s linear infinite;
+    }
+
+    @keyframes rotation {
+      0% {
+        transform: rotate(0deg);
+      }
+
+      100% {
+        transform: rotate(360deg);
+      }
+    }
+  </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react/jsx-runtime": "https://esm.sh/react@18.2.0/jsx-runtime",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "three": "https://esm.sh/three@0.160.0",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.12?external=react,react-dom,three",
+    "@react-three/drei": "https://esm.sh/@react-three/drei@9.96.1?external=react,react-dom,three,@react-three/fiber",
+    "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@2.16.0?external=react,three,@react-three/fiber,postprocessing",
+    "postprocessing": "https://esm.sh/postprocessing@6.34.1?external=three",
+    "@mediapipe/tasks-vision": "https://esm.sh/@mediapipe/tasks-vision@0.10.9"
+  }
+}
+</script>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+    import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
+    import ReactDOM from 'react-dom/client';
+    import * as THREE from 'three';
+    import { Canvas, useFrame } from '@react-three/fiber';
+    import { PerspectiveCamera, OrbitControls, Sparkles, Html, useProgress, Environment } from '@react-three/drei';
+    import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
+    import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+    // --- CONFIGURATION ---
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+    // [CRITICAL CHECK] Detect if running via "file://" protocol (Double click) or "http://" (Server)
+    // Browsers BLOCK loading local files via JS when using file:// protocol.
+    const isFileProtocol = window.location.protocol === 'file:';
+
+    const resolvePath = (path) => {
+      try {
+        if (!path || /^(http|https|blob|data|file):/.test(path)) return path;
+        const base = document.baseURI || window.location.href;
+        if (!base || base.startsWith('about:') || base.startsWith('data:')) return null;
+        return new URL(path, base).href;
+      } catch (e) { return null; }
+    };
+
+    // [SMART ASSET STRATEGY]
+    // 1. ONLINE_PATHS: Guaranteed to work anywhere (but needs internet).
+    const ONLINE_PATHS = {
+      MUSIC: "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kevin_MacLeod/Jazz_Sampler/Kevin_MacLeod_-_Jingle_Bells.mp3",
+      WASM: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm/",
+      MODEL: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+      HDR: "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/studio_small_09_1k.hdr"
+    };
+
+    // 2. LOCAL_PATHS: Fast, offline, but requires a Local Server (e.g. VS Code Live Server).
+    const LOCAL_PATHS = {
+      MUSIC: resolvePath('./assets/music.mp3'),
+      WASM: resolvePath('./assets/wasm/'),
+      MODEL: resolvePath('./assets/models/hand_landmarker.task'),
+      HDR: resolvePath('./assets/environment.hdr')
+    };
+
+    // Automatically switch based on environment
+    const PATHS = isFileProtocol ? ONLINE_PATHS : LOCAL_PATHS;
+
+    const COUNTS = isMobile ? { leaves: 800, deco: 100, ribbon: 200, snow: 100 } : { leaves: 2200, deco: 350, ribbon: 800, snow: 600 };
+    const TREE_CONFIG = { height: 18, baseRadius: 7, spiralLoops: 4 };
+    const COLORS = { bg: '#050103', leafPink1: '#FFB7C5', leafPink2: '#FF69B4', decoWhite: '#FFFFFF', decoPurple: '#E0B0FF', ribbon: '#FFFFFF' };
+    const AppState = { TREE: 'TREE', EXPLODE: 'EXPLODE' };
+
+    // --- MATH HELPERS ---
+    const getTreePosition = (ratio, angleOffset = 0) => {
+      const y = (ratio * TREE_CONFIG.height) - (TREE_CONFIG.height / 2);
+      const r = (1 - ratio) * TREE_CONFIG.baseRadius;
+      const theta = Math.random() * Math.PI * 2 + angleOffset;
+      const rr = Math.sqrt(Math.random()) * r;
+      return [rr * Math.cos(theta), y, rr * Math.sin(theta)];
+    };
+    const getRibbonPosition = (i) => {
+      const ratio = i / COUNTS.ribbon;
+      const y = (ratio * TREE_CONFIG.height) - (TREE_CONFIG.height / 2);
+      const r = ((1 - ratio) * TREE_CONFIG.baseRadius) + 0.5;
+      const theta = ratio * Math.PI * 2 * TREE_CONFIG.spiralLoops;
+      return [r * Math.cos(theta), y, r * Math.sin(theta)];
+    };
+    const getExplodePosition = () => {
+      const r = 10 + Math.random() * 15;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      return [r * Math.sin(phi) * Math.cos(theta), r * Math.sin(phi) * Math.sin(theta), r * Math.cos(phi)];
+    };
+
+    // --- COMPONENTS ---
+    class ErrorBoundary extends React.Component {
+      constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+      static getDerivedStateFromError(error) { return { hasError: true, error }; }
+      render() {
+        if (this.state.hasError) return (
+          <div className="flex flex-col items-center justify-center h-screen bg-black text-pink-500 p-8 text-center">
+            <h2 className="text-xl font-bold mb-4">CRASHED</h2><p className="text-white text-xs opacity-70 mb-4">{this.state.error?.message}</p><button onClick={() => window.location.reload()} className="mt-6 px-6 py-2 border border-pink-500 rounded-full text-white">RELOAD</button>
+          </div>
+        );
+        return this.props.children;
+      }
+    }
+
+    const SafeLoader = () => {
+      const { progress } = useProgress();
+      const [show, setShow] = useState(true);
+      useEffect(() => { const t = setTimeout(() => setShow(false), 8000); return () => clearTimeout(t); }, []);
+      if (!show && progress === 0) return null;
+      return (
+        <Html center>
+          <div className="flex flex-col items-center justify-center p-6 bg-black/90 rounded-2xl backdrop-blur-xl border border-pink-500/30">
+            <span className="loader mb-4"></span>
+            <div className="text-pink-400 font-bold tracking-widest text-sm text-center">LOADING ASSETS... {Math.round(progress)}%</div>
+          </div>
+        </Html>
+      );
+    };
+
+    const Snow = () => {
+      const mesh = useRef(null), dummy = useMemo(() => new THREE.Object3D(), []);
+      const particles = useMemo(() => Array.from({ length: COUNTS.snow }, () => ({
+        x: (Math.random() - 0.5) * 70, y: Math.random() * 50 - 10, z: (Math.random() - 0.5) * 70, speed: 0.05 + Math.random() * 0.1, wobble: Math.random() * Math.PI * 2
+      })), []);
+      useFrame((state) => {
+        if (!mesh.current) return;
+        const t = state.clock.getElapsedTime();
+        particles.forEach((p, i) => {
+          p.y -= p.speed;
+          if (p.y < -15) { p.y = 35; p.x = (Math.random() - 0.5) * 70; p.z = (Math.random() - 0.5) * 70; }
+          dummy.position.set(p.x + Math.sin(t + p.wobble) * 0.5, p.y, p.z);
+          dummy.scale.setScalar(0.05 + Math.random() * 0.05);
+          dummy.updateMatrix();
+          mesh.current.setMatrixAt(i, dummy.matrix);
+        });
+        mesh.current.instanceMatrix.needsUpdate = true;
+      });
+      return <instancedMesh ref={mesh} args={[undefined, undefined, COUNTS.snow]}><octahedronGeometry args={[1, 0]} /><meshBasicMaterial color={[1.5, 1.5, 1.5]} transparent opacity={0.8} toneMapped={false} /></instancedMesh>;
+    };
+
+    const BreathingLights = () => {
+      const spot = useRef(null), point = useRef(null);
+      useFrame(({ clock }) => {
+        const t = clock.getElapsedTime();
+        if (spot.current) spot.current.intensity = (2 + Math.sin(t * 2)) * 2;
+        if (point.current) point.current.intensity = 2 + Math.sin(t * 2);
+      });
+      return (
+        <>
+          {/* Soft Ambient to complement HDR */}
+          <ambientLight intensity={0.2} color="#442233" />
+          <spotLight ref={spot} position={[0, 15, -10]} angle={0.6} penumbra={1} intensity={5} color="#FF69B4" distance={60} decay={1} />
+          <pointLight ref={point} position={[5, 2, 5]} intensity={3} color="#00FFFF" distance={40} decay={1} />
+        </>
+      );
+    };
+
+    const Star = ({ appState }) => {
+      const mesh = useRef(null), mat = useRef(null);
+      const geo = useMemo(() => {
+        const s = new THREE.Shape();
+        for (let i = 0; i < 10; i++) {
+          const r = i % 2 === 0 ? 0.8 : 0.4, a = i * Math.PI / 5;
+          i === 0 ? s.moveTo(Math.cos(a) * r, Math.sin(a) * r) : s.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+        s.closePath();
+        return new THREE.ExtrudeGeometry(s, { depth: 0.2, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1, bevelSegments: 1 });
+      }, []);
+      useFrame((state) => {
+        if (!mesh.current) return;
+        const t = state.clock.getElapsedTime();
+        mesh.current.rotation.y = t * 0.5;
+        mesh.current.scale.lerp(new THREE.Vector3(appState === 'TREE' ? 1.5 : 0.01, appState === 'TREE' ? 1.5 : 0.01, appState === 'TREE' ? 1.5 : 0.01), 0.1);
+        if (mat.current) mat.current.emissiveIntensity = 2 + Math.sin(t * 3) * 1.5;
+      });
+      return (
+        <group position={[0, 9.5, 0]}>
+          <mesh ref={mesh} geometry={geo}><meshStandardMaterial ref={mat} color="#FFFFE0" emissive="#FFD700" emissiveIntensity={3} roughness={0.1} metalness={1.0} /></mesh>
+          <Sparkles count={20} scale={3} speed={0.4} color="#FFFF00" />
+          <pointLight distance={15} intensity={5} color="#FFD700" />
+        </group>
+      );
+    };
+
+    const ChristmasTree = ({ appState, rotationSpeed }) => {
+      const leafRef = useRef(null), decoRef = useRef(null), ribRef = useRef(null);
+      const dummy = useMemo(() => new THREE.Object3D(), []);
+      const particles = useMemo(() => {
+        const p = [];
+        for (let i = 0; i < COUNTS.leaves; i++) p.push({ t: 'L', tree: getTreePosition(Math.random()), exp: getExplodePosition(), rot: [Math.random(), Math.random(), Math.random()], c: Math.random() > 0.5 ? COLORS.leafPink1 : COLORS.leafPink2 });
+        for (let i = 0; i < COUNTS.deco; i++) p.push({ t: 'D', tree: getTreePosition(Math.random()), exp: getExplodePosition(), rot: [Math.random(), Math.random(), Math.random()], c: Math.random() > 0.6 ? COLORS.decoWhite : COLORS.decoPurple });
+        for (let i = 0; i < COUNTS.ribbon; i++) p.push({ t: 'R', tree: getRibbonPosition(i), exp: getExplodePosition(), rot: [1, 1, 1], c: COLORS.ribbon });
+        return p;
+      }, []);
+
+      useEffect(() => {
+        if (!leafRef.current) return;
+        let li = 0, di = 0, ri = 0;
+        particles.forEach(p => {
+          const c = new THREE.Color(p.c);
+          if (p.t === 'L') leafRef.current.setColorAt(li++, c);
+          else if (p.t === 'D') decoRef.current.setColorAt(di++, c);
+          else ribRef.current.setColorAt(ri++, c);
+        });
+        leafRef.current.instanceColor.needsUpdate = true;
+        decoRef.current.instanceColor.needsUpdate = true;
+        ribRef.current.instanceColor.needsUpdate = true;
+      }, []);
+
+      const prog = useRef(1);
+      useFrame((state, delta) => {
+        prog.current = THREE.MathUtils.damp(prog.current, appState === AppState.TREE ? 1 : 0, 2.5, delta);
+        const t = prog.current, et = state.clock.getElapsedTime(), rot = et * 0.1 + rotationSpeed * 5;
+        let li = 0, di = 0, ri = 0;
+        particles.forEach(p => {
+          dummy.position.set(
+            THREE.MathUtils.lerp(p.exp[0], p.tree[0], t),
+            THREE.MathUtils.lerp(p.exp[1], p.tree[1], t),
+            THREE.MathUtils.lerp(p.exp[2], p.tree[2], t)
+          );
+          const s = THREE.MathUtils.lerp(0.01, p.t === 'R' ? 0.08 : (p.t === 'D' ? 0.15 : 0.12), t) * (appState === AppState.TREE ? (1 + Math.sin(et * 2) * 0.1) : 1);
+          dummy.scale.setScalar(s);
+          dummy.rotation.set(et * p.rot[0], et * p.rot[1], et * p.rot[2]);
+          dummy.updateMatrix();
+          if (p.t === 'L') leafRef.current.setMatrixAt(li++, dummy.matrix);
+          else if (p.t === 'D') decoRef.current.setMatrixAt(di++, dummy.matrix);
+          else ribRef.current.setMatrixAt(ri++, dummy.matrix);
+        });
+        leafRef.current.instanceMatrix.needsUpdate = true;
+        decoRef.current.instanceMatrix.needsUpdate = true;
+        ribRef.current.instanceMatrix.needsUpdate = true;
+        leafRef.current.rotation.y = decoRef.current.rotation.y = ribRef.current.rotation.y = rot;
+      });
+
+      // [RESTORED] High metalness for reflections, now that we have HDR
+      return (
+        <group>
+          <instancedMesh ref={leafRef} args={[undefined, undefined, COUNTS.leaves]}><octahedronGeometry args={[1, 0]} /><meshStandardMaterial metalness={0.7} roughness={0.2} /></instancedMesh>
+          <instancedMesh ref={decoRef} args={[undefined, undefined, COUNTS.deco]}><icosahedronGeometry args={[1, 0]} /><meshPhysicalMaterial metalness={0.9} roughness={0.1} envMapIntensity={2} clearcoat={1} /></instancedMesh>
+          <instancedMesh ref={ribRef} args={[undefined, undefined, COUNTS.ribbon]}><tetrahedronGeometry args={[1, 0]} /><meshBasicMaterial toneMapped={false} /></instancedMesh>
+        </group>
+      );
+    };
+
+    const Scene = ({ appState, gestureRotation }) => (
+      <>
+        <PerspectiveCamera makeDefault position={[0, 2, 28]} fov={45} />
+        <OrbitControls enablePan={false} minDistance={10} maxDistance={50} autoRotate={false} />
+
+        <BreathingLights />
+
+        <Snow />
+        <Sparkles count={isMobile ? 30 : 80} scale={[25, 25, 25]} size={4} speed={0.3} opacity={0.5} color="#FFB7C5" />
+
+        <group position={[0, -7, 0]}>
+          <ChristmasTree appState={appState} rotationSpeed={gestureRotation} />
+          <Star appState={appState} />
+        </group>
+
+        <EffectComposer disableNormalPass multisampling={0}>
+          <Bloom intensity={1.5} luminanceThreshold={0.2} luminanceSmoothing={0.9} mipmapBlur={!isMobile} />
+          <Vignette offset={0.5} darkness={0.6} />
+        </EffectComposer>
+
+        {/* [FIX] Only render Environment if path is valid to prevent crashes */}
+        {PATHS.HDR && (
+          <Suspense fallback={null}>
+            <Environment files={PATHS.HDR} background={false} />
+          </Suspense>
+        )}
+
+        <fog attach="fog" args={['#050103', 15, 60]} />
+      </>
+    );
+
+    const AIController = ({ onGestureUpdate, onStatusChange }) => {
+      const videoRef = useRef(null);
+      const [active, setActive] = useState(false);
+      const [loading, setLoading] = useState(false);
+
+      const startAI = async () => {
+        if (loading || active) return;
+
+        // [FIX] Guard against invalid paths
+        if (!PATHS.WASM || !PATHS.MODEL) {
+          alert("AI Asset paths could not be resolved. Please check your hosting environment.");
+          return;
+        }
+
+        setLoading(true);
+        onStatusChange("CHECKING FILES...");
+
+        try {
+          // [FIX] For Online Mode, don't check via Fetch (CORS issues), just try to load
+          if (!isFileProtocol) {
+            const check = await fetch(PATHS.WASM + 'vision_wasm.js');
+            if (!check.ok) throw new Error(`File not found: ${PATHS.WASM}vision_wasm.js`);
+          }
+
+          const vision = await FilesetResolver.forVisionTasks(PATHS.WASM);
+
+          const handLandmarker = await HandLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: PATHS.MODEL,
+              delegate: isMobile ? "CPU" : "GPU"
+            },
+            runningMode: "VIDEO", numHands: 1
+          });
+
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 320, height: 240 } });
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.onloadeddata = () => {
+              setLoading(false);
+              setActive(true);
+              onStatusChange("AI READY");
+              predictLoop(handLandmarker, videoRef.current);
+            };
+          }
+        } catch (e) {
+          console.error(e);
+          setLoading(false);
+          onStatusChange(`ERROR: ${e.message.slice(0, 20)}...`);
+          alert(`AI Init Failed:\n${e.message}\n\nTry using a Local Server (vsCode Live Server)`);
+        }
+      };
+
+      const predictLoop = (landmarker, video) => {
+        let lastTime = -1;
+        const loop = () => {
+          if (video && video.currentTime !== lastTime) {
+            lastTime = video.currentTime;
+            const result = landmarker.detectForVideo(video, performance.now());
+            if (result.landmarks?.[0]) {
+              const lm = result.landmarks[0];
+              const thumb = lm[4], index = lm[8], wrist = lm[0], pinky = lm[20];
+              const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+              onGestureUpdate({ detected: true, isPinching: dist(thumb, index) < 0.05, isOpen: dist(wrist, index) > 0.3 && dist(wrist, pinky) > 0.3, handX: 1 - lm[9].x });
+            } else {
+              onGestureUpdate({ detected: false });
+            }
+          }
+          requestAnimationFrame(loop);
+        };
+        loop();
+      };
+
+      if (!active) return (
+        <button onClick={startAI} disabled={loading} className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-pink-600/80 text-white px-6 py-2 rounded-full backdrop-blur font-bold border border-pink-400 shadow-lg active:scale-95 transition-transform">
+          {loading ? "INITIALIZING..." : "✋ ENABLE HAND CONTROL"}
+        </button>
+      );
+      return <video ref={videoRef} autoPlay playsInline muted className="fixed bottom-4 right-4 w-24 h-18 opacity-50 rounded border border-pink-500 z-40" />;
+    };
+
+    const AudioController = () => {
+      const [playing, setPlaying] = useState(false);
+      const audioRef = useRef(null);
+      useEffect(() => {
+        if (PATHS.MUSIC) {
+          audioRef.current = new Audio(PATHS.MUSIC);
+          audioRef.current.loop = true;
+          audioRef.current.volume = 0.5;
+          const init = () => {
+            if (audioRef.current.paused) audioRef.current.play().then(() => setPlaying(true)).catch(() => { });
+            window.removeEventListener('click', init);
+          };
+          window.addEventListener('click', init);
+          return () => { if (audioRef.current) audioRef.current.pause(); window.removeEventListener('click', init); };
+        }
+      }, []);
+
+      if (!PATHS.MUSIC) return null;
+
+      return (
+        <button onClick={(e) => { e.stopPropagation(); if (playing) audioRef.current.pause(); else audioRef.current.play(); setPlaying(!playing); }} className={`fixed top-4 right-4 z-50 p-3 rounded-full backdrop-blur-md border ${playing ? 'bg-pink-500/30 text-pink-100' : 'bg-black/30 text-gray-400'}`}>
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={playing ? "M18 6L6 18M6 6l12 12" : "M9 18V5l12-2v13"} /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+        </button>
+      );
+    };
+
+    const App = () => {
+      const [appState, setAppState] = useState(AppState.TREE);
+      const [gestureRotation, setGestureRotation] = useState(0);
+      const [aiStatus, setAiStatus] = useState("");
+      const [isGestureActive, setIsGestureActive] = useState(false);
+      const handleGesture = useCallback((g) => {
+        setIsGestureActive(g.detected);
+        if (!g.detected) return;
+        if (g.isPinching) setAppState(AppState.TREE);
+        else if (g.isOpen) { setAppState(AppState.EXPLODE); setGestureRotation(r => r + (g.handX - 0.5) * 0.1); }
+      }, []);
+
+      return (
+        <ErrorBoundary>
+          <div className="w-full h-screen bg-[#050103] text-white relative overflow-hidden">
+            <AudioController />
+            <div className="absolute inset-0 z-0" onClick={() => setAppState(s => s === AppState.TREE ? AppState.EXPLODE : AppState.TREE)}>
+              <Canvas dpr={[1, isMobile ? 1.5 : 2]} gl={{ antialias: false }}>
+                <Suspense fallback={<SafeLoader />}>
+                  <Scene appState={appState} gestureRotation={gestureRotation} />
+                </Suspense>
+              </Canvas>
+            </div>
+
+            {/* WARNING BANNER FOR FILE PROTOCOL */}
+            {isFileProtocol && (
+              <div className="absolute top-20 left-6 z-50 bg-yellow-500/20 border border-yellow-500/50 p-2 rounded text-yellow-200 text-xs max-w-xs backdrop-blur-md">
+                ⚠️ <b>Running in File Mode</b><br />
+                Using online assets fallback.<br />
+                For offline/local assets, please use a Local Server (e.g. VS Code Live Server).
+              </div>
+            )}
+
+            <div className="absolute top-0 left-0 p-6 z-10 pointer-events-none">
+              <h1 className="text-4xl font-bold tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-pink-400 to-purple-500 drop-shadow-[0_0_10px_rgba(255,105,180,0.5)]">CYBER<span className="text-white font-light">XMAS</span></h1>
+              <p className="mt-1 text-pink-200/50 text-xs tracking-widest">Local HDR Edition</p>
+            </div>
+            <div className="absolute bottom-6 left-6 z-10 pointer-events-none text-xs text-gray-400">
+              <p className={`font-bold mb-1 ${aiStatus.startsWith("ERROR") ? "text-red-500" : "text-pink-500"}`}>{aiStatus}</p>
+              <p>TAP SCREEN • PINCH TO ASSEMBLE</p>
+            </div>
+            <AIController onGestureUpdate={handleGesture} onStatusChange={setAiStatus} />
+            {isGestureActive && <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center"><div className="text-pink-500/10 text-[80px] font-bold tracking-widest animate-pulse">AI ACTIVE</div></div>}
+          </div>
+        </ErrorBoundary>
+      );
+    };
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);
+  </script>
+</body>
+
+</html>
