@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -68,7 +68,7 @@
 <body>
   <div id="root"></div>
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
+    import React, { useState, useEffect, useRef, useMemo, Suspense } from 'react';
     import ReactDOM from 'react-dom/client';
     import * as THREE from 'three';
     import { Canvas, useFrame } from '@react-three/fiber';
@@ -104,8 +104,6 @@
     // 2. LOCAL_PATHS: Fast, offline, but requires a Local Server (e.g. VS Code Live Server).
     const LOCAL_PATHS = {
       MUSIC: resolvePath('./assets/music.mp3'),
-      WASM: resolvePath('./assets/wasm/'),
-      MODEL: resolvePath('./assets/models/hand_landmarker.task'),
       HDR: resolvePath('./assets/environment.hdr')
     };
 
@@ -327,86 +325,6 @@
       );
     };
 
-    const AIController = ({ onGestureUpdate, onStatusChange }) => {
-      const videoRef = useRef(null);
-      const [active, setActive] = useState(false);
-      const [loading, setLoading] = useState(false);
-
-      const startAI = async () => {
-        if (loading || active) return;
-
-        // [FIX] Guard against invalid paths
-        if (!PATHS.WASM || !PATHS.MODEL) {
-          alert("AI Asset paths could not be resolved. Please check your hosting environment.");
-          return;
-        }
-
-        setLoading(true);
-        onStatusChange("CHECKING FILES...");
-
-        try {
-          // [FIX] For Online Mode, don't check via Fetch (CORS issues), just try to load
-          if (!isFileProtocol) {
-            const check = await fetch(PATHS.WASM + 'vision_wasm_internal.js');
-            if (!check.ok) throw new Error(`File not found: ${PATHS.WASM}vision_wasm_internal.js`);
-          }
-
-          const vision = await FilesetResolver.forVisionTasks(PATHS.WASM);
-
-          const handLandmarker = await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath: PATHS.MODEL,
-              delegate: isMobile ? "CPU" : "GPU"
-            },
-            runningMode: "VIDEO", numHands: 1
-          });
-
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 320, height: 240 } });
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            videoRef.current.onloadeddata = () => {
-              setLoading(false);
-              setActive(true);
-              onStatusChange("AI READY");
-              predictLoop(handLandmarker, videoRef.current);
-            };
-          }
-        } catch (e) {
-          console.error(e);
-          setLoading(false);
-          onStatusChange(`ERROR: ${e.message.slice(0, 20)}...`);
-          alert(`AI Init Failed:\n${e.message}\n\nTry using a Local Server (vsCode Live Server)`);
-        }
-      };
-
-      const predictLoop = (landmarker, video) => {
-        let lastTime = -1;
-        const loop = () => {
-          if (video && video.currentTime !== lastTime) {
-            lastTime = video.currentTime;
-            const result = landmarker.detectForVideo(video, performance.now());
-            if (result.landmarks?.[0]) {
-              const lm = result.landmarks[0];
-              const thumb = lm[4], index = lm[8], wrist = lm[0], pinky = lm[20];
-              const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-              onGestureUpdate({ detected: true, isPinching: dist(thumb, index) < 0.05, isOpen: dist(wrist, index) > 0.3 && dist(wrist, pinky) > 0.3, handX: 1 - lm[9].x });
-            } else {
-              onGestureUpdate({ detected: false });
-            }
-          }
-          requestAnimationFrame(loop);
-        };
-        loop();
-      };
-
-      if (!active) return (
-        <button onClick={startAI} disabled={loading} className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-emerald-600/80 text-white px-6 py-2 rounded-full backdrop-blur font-bold border border-pink-400 shadow-lg active:scale-95 transition-transform">
-          {loading ? "INITIALIZING..." : "✋ ENABLE HAND CONTROL"}
-        </button>
-      );
-      return <video ref={videoRef} autoPlay playsInline muted className="fixed bottom-4 right-4 w-24 h-18 opacity-50 rounded border border-amber-400 z-40" />;
-    };
-
     const AudioController = () => {
       const [playing, setPlaying] = useState(false);
       const audioRef = useRef(null);
@@ -436,14 +354,6 @@
     const App = () => {
       const [appState, setAppState] = useState(AppState.TREE);
       const [gestureRotation, setGestureRotation] = useState(0);
-      const [aiStatus, setAiStatus] = useState("");
-      const [isGestureActive, setIsGestureActive] = useState(false);
-      const handleGesture = useCallback((g) => {
-        setIsGestureActive(g.detected);
-        if (!g.detected) return;
-        if (g.isPinching) setAppState(AppState.TREE);
-        else if (g.isOpen) { setAppState(AppState.EXPLODE); setGestureRotation(r => r + (g.handX - 0.5) * 0.1); }
-      }, []);
 
       return (
         <ErrorBoundary>
@@ -471,11 +381,8 @@
               <p className="mt-1 text-amber-200/50 text-xs tracking-widest">Local HDR Edition</p>
             </div>
             <div className="absolute bottom-6 left-6 z-10 pointer-events-none text-xs text-gray-400">
-              <p className={`font-bold mb-1 ${aiStatus.startsWith("ERROR") ? "text-red-500" : "text-amber-400"}`}>{aiStatus}</p>
               <p>TAP SCREEN • PINCH TO ASSEMBLE</p>
             </div>
-            <AIController onGestureUpdate={handleGesture} onStatusChange={setAiStatus} />
-            {isGestureActive && <div className="absolute inset-0 pointer-events-none z-20 flex items-center justify-center"><div className="text-amber-400/10 text-[80px] font-bold tracking-widest animate-pulse">AI ACTIVE</div></div>}
           </div>
         </ErrorBoundary>
       );
