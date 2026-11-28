@@ -68,7 +68,7 @@
 <body>
   <div id="root"></div>
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useRef, useMemo, Suspense } from 'react';
+    import React, { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
     import ReactDOM from 'react-dom/client';
     import * as THREE from 'three';
     import { Canvas, useFrame } from '@react-three/fiber';
@@ -96,7 +96,7 @@
     // 1. ONLINE_PATHS: Guaranteed to work anywhere (but needs internet).
     const ONLINE_PATHS = {
       MUSIC: "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kevin_MacLeod/Jazz_Sampler/Kevin_MacLeod_-_Jingle_Bells.mp3",
-      WASM: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm/",
+      WASM: "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.9/wasm",
       MODEL: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
       HDR: "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/studio_small_09_1k.hdr"
     };
@@ -104,11 +104,22 @@
     // 2. LOCAL_PATHS: Fast, offline, but requires a Local Server (e.g. VS Code Live Server).
     const LOCAL_PATHS = {
       MUSIC: resolvePath('./assets/music.mp3'),
-      HDR: resolvePath('./assets/environment.hdr')
+      HDR: resolvePath('./assets/environment.hdr'),
+      WASM: resolvePath('./assets/wasm'),
+      MODEL: resolvePath('./assets/hand_landmarker.task')
     };
 
     // Automatically switch based on environment
     const PATHS = isFileProtocol ? ONLINE_PATHS : LOCAL_PATHS;
+
+    // [GESTURE] Candidate sources for the hand-tracking model.
+    // Local first (offline, fast), CDN as fallback so it works out of the box.
+    const GESTURE_CANDIDATES = isFileProtocol
+      ? [{ wasm: ONLINE_PATHS.WASM, model: ONLINE_PATHS.MODEL }]
+      : [
+        { wasm: LOCAL_PATHS.WASM, model: LOCAL_PATHS.MODEL },
+        { wasm: ONLINE_PATHS.WASM, model: ONLINE_PATHS.MODEL }
+      ];
 
     const COUNTS = isMobile ? { leaves: 800, deco: 100, ribbon: 200, snow: 100 } : { leaves: 2200, deco: 350, ribbon: 800, snow: 600 };
     const TREE_CONFIG = { height: 18, baseRadius: 7, spiralLoops: 4 };
@@ -135,6 +146,72 @@
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
       return [r * Math.sin(phi) * Math.cos(theta), r * Math.sin(phi) * Math.sin(theta), r * Math.cos(phi)];
+    };
+
+    // --- GESTURE RECOGNITION ---
+    const HAND_CONNECTIONS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+    const GESTURE = { NONE: 'NONE', OPEN_PALM: 'OPEN_PALM', FIST: 'FIST', PINCH: 'PINCH' };
+    const GESTURE_LABEL = {
+      OPEN_PALM: 'OPEN PALM', FIST: 'FIST', PINCH: 'PINCH', NONE: 'NO HAND'
+    };
+
+    const vDist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+    /**
+     * Classify a 21-point hand landmark array into a gesture.
+     * Returns { type, x, pinchAmt } where x is the mirrored horizontal
+     * position of the palm in [-1, 1] (right = positive).
+     */
+    const classifyGesture = (lm) => {
+      const wrist = lm[0];
+      const scale = Math.max(1e-6, vDist(wrist, lm[9])); // wrist -> middle MCP
+
+      const fingerIds = { index: [8, 6], middle: [12, 10], ring: [16, 14], pinky: [20, 18] };
+      let extendedCount = 0;
+      const extended = {};
+      for (const key in fingerIds) {
+        const [tipIdx, pipIdx] = fingerIds[key];
+        extended[key] = vDist(lm[tipIdx], wrist) > vDist(lm[pipIdx], wrist) * 1.08;
+        if (extended[key]) extendedCount++;
+      }
+
+      const pinchDist = vDist(lm[4], lm[8]) / scale;
+
+      // Order matters: an open palm often tucks the thumb near the index finger,
+      // which would otherwise look like a pinch. All four fingers extended wins.
+      let type = GESTURE.NONE;
+      if (extendedCount === 4) type = GESTURE.OPEN_PALM;
+      else if (extendedCount === 0) type = GESTURE.FIST;
+      else if (pinchDist < 0.62 && (extended.middle || extended.ring || extended.pinky)) type = GESTURE.PINCH;
+
+      // Mirror horizontally so moving the hand right spins the tree right.
+      const x = THREE.MathUtils.clamp(((1 - lm[9].x) - 0.5) * 2, -1, 1);
+      return { type, x, pinchAmt: THREE.MathUtils.clamp(1 - pinchDist / 0.9, 0, 1) };
+    };
+
+    /** Load the hand landmarker, preferring local assets and falling back to the CDN. */
+    const loadHandLandmarker = async () => {
+      let lastError = null;
+      for (const candidate of GESTURE_CANDIDATES) {
+        if (!candidate.wasm || !candidate.model) continue;
+        try {
+          const fileset = await FilesetResolver.forVisionTasks(candidate.wasm);
+          const options = {
+            baseOptions: { modelAssetPath: candidate.model, delegate: 'GPU' },
+            runningMode: 'VIDEO',
+            numHands: 1
+          };
+          try {
+            return await HandLandmarker.createFromOptions(fileset, options);
+          } catch (gpuError) {
+            options.baseOptions.delegate = 'CPU';
+            return await HandLandmarker.createFromOptions(fileset, options);
+          }
+        } catch (e) {
+          lastError = e;
+        }
+      }
+      throw lastError || new Error('Unable to load hand landmarker');
     };
 
     // --- COMPONENTS ---
@@ -231,9 +308,11 @@
       );
     };
 
-    const ChristmasTree = ({ appState, rotationSpeed }) => {
+    const ChristmasTree = ({ appState, gestureRef }) => {
       const leafRef = useRef(null), decoRef = useRef(null), ribRef = useRef(null);
       const dummy = useMemo(() => new THREE.Object3D(), []);
+      const rotRef = useRef(0);
+      const spinRef = useRef(0);
       const particles = useMemo(() => {
         const p = [];
         for (let i = 0; i < COUNTS.leaves; i++) p.push({ t: 'L', tree: getTreePosition(Math.random()), exp: getExplodePosition(), rot: [Math.random(), Math.random(), Math.random()], c: Math.random() > 0.5 ? COLORS.leafPink1 : COLORS.leafPink2 });
@@ -259,7 +338,13 @@
       const prog = useRef(1);
       useFrame((state, delta) => {
         prog.current = THREE.MathUtils.damp(prog.current, appState === AppState.TREE ? 1 : 0, 2.5, delta);
-        const t = prog.current, et = state.clock.getElapsedTime(), rot = et * 0.1 + rotationSpeed * 5;
+        const t = prog.current, et = state.clock.getElapsedTime();
+        // [GESTURE] Hand X position drives the spin; the tree keeps a gentle idle drift.
+        const g = gestureRef.current;
+        const targetSpin = g.active ? g.x * 2.4 : 0;
+        spinRef.current = THREE.MathUtils.damp(spinRef.current, targetSpin, 4, delta);
+        rotRef.current += delta * (0.1 + spinRef.current);
+        const rot = rotRef.current;
         let li = 0, di = 0, ri = 0;
         particles.forEach(p => {
           dummy.position.set(
@@ -293,7 +378,20 @@
 
     const getCamZ = () => Math.max(28, 8.6 / (Math.tan(THREE.MathUtils.degToRad(22.5)) * (window.innerWidth / Math.max(1, window.innerHeight))));
 
-    const Scene = ({ appState, gestureRotation }) => {
+    // [GESTURE] Applies pinch-driven zoom to the tree without re-rendering React.
+    const GestureZoom = ({ gestureRef, children }) => {
+      const ref = useRef(null);
+      useFrame((state, delta) => {
+        if (!ref.current) return;
+        const g = gestureRef.current;
+        const target = g.active ? 1 + g.pinchAmt * 0.45 : 1;
+        const s = THREE.MathUtils.damp(ref.current.scale.x, target, 5, delta);
+        ref.current.scale.setScalar(s);
+      });
+      return <group ref={ref}>{children}</group>;
+    };
+
+    const Scene = ({ appState, gestureRef }) => {
       return (
       <>
         <OrbitControls enablePan={false} minDistance={10} maxDistance={60} autoRotate={false} target={[0, 0, 0]} />
@@ -304,8 +402,10 @@
         <Sparkles count={isMobile ? 30 : 80} scale={[25, 25, 25]} size={4} speed={0.3} opacity={0.5} color="#FFD24A" />
 
         <group position={[0, 1.4, 0]}>
-          <ChristmasTree appState={appState} rotationSpeed={gestureRotation} />
-          <Star appState={appState} />
+          <GestureZoom gestureRef={gestureRef}>
+            <ChristmasTree appState={appState} gestureRef={gestureRef} />
+            <Star appState={appState} />
+          </GestureZoom>
         </group>
 
         <EffectComposer disableNormalPass multisampling={0}>
@@ -351,18 +451,233 @@
       );
     };
 
+    // Mirror the camera feed and overlay the tracked hand skeleton.
+    const drawHand = (canvas, video, landmarks) => {
+      if (!canvas || !video) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.save();
+      ctx.clearRect(0, 0, w, h);
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, w, h);
+      ctx.restore();
+      if (!landmarks) return;
+
+      const px = (i) => (1 - landmarks[i].x) * w;
+      const py = (i) => landmarks[i].y * h;
+
+      ctx.strokeStyle = 'rgba(255, 201, 74, 0.85)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (const [a, b] of HAND_CONNECTIONS) {
+        ctx.moveTo(px(a), py(a));
+        ctx.lineTo(px(b), py(b));
+      }
+      ctx.stroke();
+
+      ctx.fillStyle = '#2FD469';
+      for (let i = 0; i < landmarks.length; i++) {
+        ctx.beginPath();
+        ctx.arc(px(i), py(i), 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+
+    // [GESTURE] Drives the scene from webcam hand tracking.
+    // - OPEN PALM  -> explode the tree
+    // - FIST       -> reassemble the tree
+    // - PINCH      -> zoom in/out (finger distance)
+    // - Hand X     -> spin the tree
+    const GestureController = ({ gestureRef, onExplode }) => {
+      const videoRef = useRef(null);
+      const canvasRef = useRef(null);
+      const rafRef = useRef(0);
+      const landmarkerRef = useRef(null);
+      const streamRef = useRef(null);
+      const typeRef = useRef(GESTURE.NONE);
+      const frameCbRef = useRef(0);
+      const startedRef = useRef(false);
+      const [status, setStatus] = useState('idle'); // idle | loading | running | error
+      const [error, setError] = useState('');
+      const [current, setCurrent] = useState(GESTURE.NONE);
+
+      const stop = useCallback(() => {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+        if (videoRef.current && typeof videoRef.current.cancelVideoFrameCallback === 'function' && frameCbRef.current) {
+          videoRef.current.cancelVideoFrameCallback(frameCbRef.current);
+          frameCbRef.current = 0;
+        }
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(t => t.stop());
+          streamRef.current = null;
+        }
+        if (landmarkerRef.current) {
+          try { landmarkerRef.current.close(); } catch (e) { }
+          landmarkerRef.current = null;
+        }
+        const g = gestureRef.current;
+        g.active = false;
+        g.x = 0;
+        g.pinchAmt = 0;
+        g.type = GESTURE.NONE;
+        typeRef.current = GESTURE.NONE;
+        startedRef.current = false;
+        setCurrent(GESTURE.NONE);
+        setStatus('idle');
+      }, [gestureRef]);
+
+      const start = useCallback(async () => {
+        if (status === 'loading' || status === 'running') return;
+        setStatus('loading');
+        setError('');
+        startedRef.current = true;
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: 640, height: 480 },
+            audio: false
+          });
+          if (!startedRef.current) {
+            stream.getTracks().forEach(t => t.stop());
+            return;
+          }
+          streamRef.current = stream;
+          const video = videoRef.current;
+          video.srcObject = stream;
+          await video.play();
+
+          const landmarker = await loadHandLandmarker();
+          landmarkerRef.current = landmarker;
+
+          if (!startedRef.current) {
+            landmarker.close();
+            return;
+          }
+          setStatus('running');
+          const detect = () => {
+            const v = videoRef.current;
+            if (!v || v.readyState < 2) return;
+
+            const results = landmarker.detectForVideo(v, performance.now());
+            const landmarks = results.landmarks && results.landmarks[0];
+            drawHand(canvasRef.current, v, landmarks);
+
+            const g = gestureRef.current;
+            if (!landmarks) {
+              g.active = false;
+              g.x = 0;
+              g.pinchAmt = 0;
+              g.type = GESTURE.NONE;
+              if (typeRef.current !== GESTURE.NONE) {
+                typeRef.current = GESTURE.NONE;
+                setCurrent(GESTURE.NONE);
+              }
+              return;
+            }
+
+            const result = classifyGesture(landmarks);
+            g.active = true;
+            g.x = result.x;
+            g.pinchAmt = result.type === GESTURE.PINCH ? result.pinchAmt : 0;
+            g.type = result.type;
+            if (result.type !== typeRef.current) {
+              typeRef.current = result.type;
+              setCurrent(result.type);
+              if (result.type === GESTURE.OPEN_PALM) onExplode(true);
+              else if (result.type === GESTURE.FIST) onExplode(false);
+            }
+          };
+
+          // [PERF] requestVideoFrameCallback fires once per decoded camera frame,
+          // so detection keeps up with the webcam instead of the render loop.
+          if (typeof video.requestVideoFrameCallback === 'function') {
+            const onFrame = () => {
+              frameCbRef.current = 0;
+              detect();
+              const v = videoRef.current;
+              if (v) frameCbRef.current = v.requestVideoFrameCallback(onFrame);
+            };
+            frameCbRef.current = video.requestVideoFrameCallback(onFrame);
+          } else {
+            let lastVideoTime = -1;
+            const loop = () => {
+              rafRef.current = requestAnimationFrame(loop);
+              const v = videoRef.current;
+              if (!v || v.readyState < 2) return;
+              if (v.currentTime === lastVideoTime) return;
+              lastVideoTime = v.currentTime;
+              detect();
+            };
+            rafRef.current = requestAnimationFrame(loop);
+          }
+        } catch (e) {
+          console.error(e);
+          setError(e && e.message ? e.message : 'Camera / model unavailable');
+          setStatus('error');
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach(t => t.stop());
+            streamRef.current = null;
+          }
+        }
+      }, [status, gestureRef, onExplode]);
+
+      useEffect(() => () => stop(), [stop]);
+
+      const active = status === 'running';
+
+      return (
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+          <video ref={videoRef} playsInline muted autoPlay style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} />
+
+          <div className={`relative w-40 h-[120px] rounded-xl overflow-hidden border border-emerald-400/40 shadow-[0_0_20px_rgba(47,212,105,0.25)] ${active ? 'block' : 'hidden'}`}>
+            <canvas ref={canvasRef} width={160} height={120} className="w-full h-full object-cover" />
+            <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/60 text-[9px] tracking-widest text-emerald-300 border border-emerald-400/30">
+              {GESTURE_LABEL[current]}
+            </div>
+          </div>
+
+          <button
+            onClick={(e) => { e.stopPropagation(); active ? stop() : start(); }}
+            className={`p-3 rounded-full backdrop-blur-md border transition-colors ${active ? 'bg-emerald-500/30 text-emerald-100 border-emerald-400/50' : 'bg-black/30 text-gray-400 border-white/10 hover:text-white'}`}
+            title="Toggle gesture control"
+          >
+            {status === 'loading' ? (
+              <span className="loader" style={{ width: 20, height: 20, borderWidth: 3 }}></span>
+            ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 11V6a2 2 0 0 0-4 0v5" /><path d="M14 10V4a2 2 0 0 0-4 0v6" /><path d="M10 10.5V6a2 2 0 0 0-4 0v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+              </svg>
+            )}
+          </button>
+
+          {status === 'error' && (
+            <div className="max-w-[220px] p-2 rounded bg-red-500/20 border border-red-500/50 text-red-200 text-[10px] backdrop-blur-md">
+              {error}
+            </div>
+          )}
+        </div>
+      );
+    };
+
     const App = () => {
       const [appState, setAppState] = useState(AppState.TREE);
-      const [gestureRotation, setGestureRotation] = useState(0);
+      // [GESTURE] Mutable channel into the render loop — avoids re-rendering the scene per frame.
+      const gestureRef = useRef({ active: false, x: 0, pinchAmt: 0, type: GESTURE.NONE });
+
+      const handleExplode = useCallback((exploded) => {
+        setAppState(exploded ? AppState.EXPLODE : AppState.TREE);
+      }, []);
 
       return (
         <ErrorBoundary>
           <div className="w-full h-screen bg-[#050103] text-white relative overflow-hidden">
             <AudioController />
+            <GestureController gestureRef={gestureRef} onExplode={handleExplode} />
             <div className="absolute inset-0 z-0" onClick={() => setAppState(s => s === AppState.TREE ? AppState.EXPLODE : AppState.TREE)}>
               <Canvas dpr={[1, 2]} gl={{ antialias: true }} camera={{ position: [0, 0, getCamZ()], fov: 45 }}>
                 <Suspense fallback={<SafeLoader />}>
-                  <Scene appState={appState} gestureRotation={gestureRotation} />
+                  <Scene appState={appState} gestureRef={gestureRef} />
                 </Suspense>
               </Canvas>
             </div>
@@ -382,6 +697,7 @@
             </div>
             <div className="absolute bottom-6 left-6 z-10 pointer-events-none text-xs text-gray-400">
               <p>TAP SCREEN • PINCH TO ASSEMBLE</p>
+              <p className="mt-1 text-emerald-300/60">GESTURE: OPEN PALM → EXPLODE • FIST → REASSEMBLE • PINCH → ZOOM • MOVE HAND → SPIN</p>
             </div>
           </div>
         </ErrorBoundary>
